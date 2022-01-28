@@ -1,0 +1,146 @@
+name: CI
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: 'Version Spec of the version to use. Examples: 12.x, 10.15.1, >=10.15.0'
+        default: 12
+        required: false
+        type: string
+
+      package-manager:
+        description: 'Used to specify a package manager for caching in the default directory. Supported values: npm, yarn, pnpm'
+        default: npm
+        required: false
+        type: string
+
+      # Currently, Arrays cannot be passed as inputs so the trick is to pass an Array as a string
+      # and to decode the string with `fromJSON()` to rebuild the real Array.
+      # https://colinsalmcorner.com/musings-on-reusable-workflows/#array-hack
+      ember-try-scenarios:
+        description: Custom ember-try scenarios to run.
+        default: "[
+            'ember-lts-3.24',
+            'ember-lts-3.28',
+            'ember-release',
+            'ember-beta',
+            'ember-canary',
+            'ember-classic',
+            'embroider-safe',
+            'embroider-optimized',
+          ]"
+        required: false
+        type: string
+
+jobs:
+  lint-tests:
+    name: Lint and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v2
+        with:
+          cache: ${{ inputs.package-manager }}
+          node-version: ${{ inputs.node-version }}
+
+      # https://github.com/lirantal/lockfile-lint
+      - name: Lint lockfile
+        run: |
+          if [ "${{ inputs.package-manager }}" = "npm" ]; then
+            npx lockfile-lint --path package-lock.json --allowed-hosts npm yarn --validate-https
+          elif [ "${{ inputs.package-manager }}" = "yarn" ]; then
+            npx lockfile-lint --path yarn.lock --allowed-hosts npm yarn --validate-https
+          else
+            echo "Unsupported package manager: ${{ inputs.package-manager }}"
+            exit 1
+          fi
+
+      - name: Install Dependencies
+        run: |
+          if [ "${{ inputs.package-manager }}" = "npm" ]; then
+            npm ci
+          elif [ "${{ inputs.package-manager }}" = "yarn" ]; then
+            yarn install --frozen-lockfile
+          elif [ "${{ inputs.package-manager }}" = "pnpm" ]; then
+            pnpm install --frozen-lockfile
+          else
+            echo "Unsupported package manager: ${{ inputs.package-manager }}"
+            exit 1
+          fi
+
+      - name: Run Lint
+        run: ${{ inputs.package-manager }} run lint
+
+      - name: Run Tests
+        run: ${{ inputs.package-manager }} run test:ember
+
+  floating:
+    name: Floating Dependencies
+    needs: lint-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v2
+        with:
+          cache: ${{ inputs.package-manager }}
+          node-version: ${{ inputs.node-version }}
+
+      - name: Install Dependencies
+        run: |
+          if [ "${{ inputs.package-manager }}" = "npm" ]; then
+            npm install --no-shrinkwrap
+          elif [ "${{ inputs.package-manager }}" = "yarn" ]; then
+            yarn install --no-lockfile --non-interactive
+          elif [ "${{ inputs.package-manager }}" = "pnpm" ]; then
+            pnpm install --no-lockfile 
+          else
+            echo "Unsupported package manager: ${{ inputs.package-manager }}"
+            exit 1
+          fi
+
+      - name: Run Tests
+        run: ${{ inputs.package-manager }} run test:ember
+
+  try-scenarios:
+    name: ${{ matrix.try-scenario }}
+    needs: lint-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        try-scenario: ${{ fromJSON(inputs.ember-try-scenarios) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v2
+        with:
+          cache: ${{ inputs.package-manager }}
+          node-version: ${{ inputs.node-version }}
+
+      - name: Install Dependencies
+        run: |
+          if [ "${{ inputs.package-manager }}" = "npm" ]; then
+            npm ci
+          elif [ "${{ inputs.package-manager }}" = "yarn" ]; then
+            yarn install --frozen-lockfile
+          elif [ "${{ inputs.package-manager }}" = "pnpm" ]; then
+            pnpm install --frozen-lockfile
+          else
+            echo "Unsupported package manager: ${{ inputs.package-manager }}"
+            exit 1
+          fi
+
+      - name: Run Tests
+        run: ./node_modules/.bin/ember try:one ${{ matrix.try-scenario }}
